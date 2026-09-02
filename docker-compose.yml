@@ -1,0 +1,58 @@
+# Console relay for the Chito Bag server.
+#
+# Deliberately a separate compose project from the Minecraft server so that
+# changes here never trigger the server's deploy pipeline. It joins the
+# network the server already owns rather than creating its own.
+
+name: chitobag-relay
+
+services:
+  relay:
+    build: .
+    image: chitobag-relay:latest
+    container_name: chitobag-relay
+    restart: unless-stopped
+
+    # Survives Minecraft restarting underneath it, and reports the outage
+    # rather than crash-looping.
+    stop_grace_period: 15s
+
+    environment:
+      DISCORD_TOKEN: ${DISCORD_TOKEN:?set DISCORD_TOKEN in .env}
+      RCON_HOST: ${RCON_HOST:-chitobag-server}
+      RCON_PORT: ${RCON_PORT:-25575}
+      RCON_PASSWORD_FILE: /data/.rcon_password
+      MC_LOG_PATH: /data/logs/latest.log
+      COMMAND_CHANNEL_IDS: ${COMMAND_CHANNEL_IDS:?at least one channel id}
+      CONSOLE_CHANNEL_ID: ${CONSOLE_CHANNEL_ID:-0}
+      BRIDGE_CHANNEL_ID: ${BRIDGE_CHANNEL_ID:-0}
+      AUDIT_CHANNEL_ID: ${AUDIT_CHANNEL_ID:-0}
+      ADMIN_USER_IDS: ${ADMIN_USER_IDS:-}
+      ADMIN_ROLE_IDS: ${ADMIN_ROLE_IDS:-}
+      MOD_ROLE_IDS: ${MOD_ROLE_IDS:-}
+      BRIDGE_TO_GAME: ${BRIDGE_TO_GAME:-false}
+      RATE_PER_USER: ${RATE_PER_USER:-8}
+      RATE_WINDOW: ${RATE_WINDOW:-60}
+
+    volumes:
+      # Read-only: the relay needs the RCON password and the log, and must
+      # never be able to write to the world or the configs.
+      - type: bind
+        source: ${MC_DATA_DIR:-/srv/chitobag/data}
+        target: /data
+        read_only: true
+
+    networks:
+      - mc
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  mc:
+    # Created and owned by the Minecraft compose project; never by this one.
+    name: chitobag_default
+    external: true
