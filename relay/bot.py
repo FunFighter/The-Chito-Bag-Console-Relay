@@ -212,8 +212,7 @@ def register(client: Relay) -> None:
 
     def caller_tier(inter: discord.Interaction) -> int:
         roles = {r.id for r in getattr(inter.user, "roles", [])}
-        return authz.tier_for(inter.user.id, roles, cfg.admin_users,
-                              cfg.admin_roles, cfg.mod_roles)
+        return authz.tier_for(inter.user.id, inter.user.name, roles, cfg.grants)
 
     async def guard(inter: discord.Interaction) -> bool:
         if inter.channel_id not in cfg.command_channels:

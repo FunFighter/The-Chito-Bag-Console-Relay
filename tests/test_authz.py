@@ -94,14 +94,52 @@ def test_case_insensitive():
 
 # --- tier resolution -----------------------------------------------------
 
-def test_tier_resolution_prefers_highest_match():
-    assert authz.tier_for(1, set(), {1}, set(), set()) == TIER_ADMIN
-    assert authz.tier_for(2, {10}, set(), {10}, set()) == TIER_ADMIN
-    assert authz.tier_for(2, {20}, set(), {10}, {20}) == TIER_MOD
-    assert authz.tier_for(2, {99}, set(), {10}, {20}) == TIER_READ
-    # Holding both roles must resolve to admin, not moderator.
-    assert authz.tier_for(2, {10, 20}, set(), {10}, {20}) == TIER_ADMIN
+def _g(**kw):
+    return authz.Grants(**{k: frozenset(v) for k, v in kw.items()})
+
+
+def test_admin_by_user_id():
+    assert authz.tier_for(1, "someone", set(), _g(admin_ids={1})) == TIER_ADMIN
+
+
+def test_admin_by_username():
+    g = _g(admin_usernames={"new_metoadbird", "saddadchito"})
+    assert authz.tier_for(999, "new_metoadbird", set(), g) == TIER_ADMIN
+    assert authz.tier_for(998, "saddadchito", set(), g) == TIER_ADMIN
+    assert authz.tier_for(997, "someone_else", set(), g) == TIER_READ
+
+
+def test_username_match_is_case_insensitive():
+    g = _g(admin_usernames={"new_metoadbird"})
+    assert authz.tier_for(1, "NEW_MetoadBird", set(), g) == TIER_ADMIN
+
+
+def test_username_match_is_exact_not_substring():
+    # A near-miss handle must not inherit admin.
+    g = _g(admin_usernames={"saddadchito"})
+    assert authz.tier_for(1, "saddadchito2", set(), g) == TIER_READ
+    assert authz.tier_for(1, "addadchito", set(), g) == TIER_READ
+    assert authz.tier_for(1, "xsaddadchitox", set(), g) == TIER_READ
+
+
+def test_admin_by_role():
+    assert authz.tier_for(2, "u", {10}, _g(admin_roles={10})) == TIER_ADMIN
+
+
+def test_mod_by_role_and_username():
+    g = _g(admin_roles={10}, mod_roles={20}, mod_usernames={"helper"})
+    assert authz.tier_for(2, "u", {20}, g) == TIER_MOD
+    assert authz.tier_for(3, "helper", set(), g) == TIER_MOD
+
+
+def test_highest_grant_wins():
+    g = _g(admin_roles={10}, mod_roles={20})
+    assert authz.tier_for(2, "u", {10, 20}, g) == TIER_ADMIN
+    g2 = _g(admin_usernames={"boss"}, mod_roles={20})
+    assert authz.tier_for(2, "boss", {20}, g2) == TIER_ADMIN
 
 
 def test_unknown_user_defaults_to_read_only():
-    assert authz.tier_for(12345, set(), set(), set(), set()) == TIER_READ
+    assert authz.tier_for(12345, "nobody", set(), _g()) == TIER_READ
+    # Empty/missing username must not match an empty grant set by accident.
+    assert authz.tier_for(12345, "", set(), _g(admin_usernames=set())) == TIER_READ

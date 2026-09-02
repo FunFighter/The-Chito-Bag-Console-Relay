@@ -10,7 +10,7 @@ does not match a rule at or below the caller's tier, it is refused.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 TIER_READ = 0
 TIER_MOD = 1
@@ -75,6 +75,22 @@ _EXPLAIN = {
 
 
 @dataclass(frozen=True)
+class Grants:
+    """Who holds which tier.
+
+    Usernames are supported because they are what people actually know, but
+    they are mutable -- Discord lets anyone change their handle, and a freed
+    handle can be claimed by someone else. User IDs are permanent and are the
+    stronger grant; prefer them once you have collected them.
+    """
+    admin_ids: frozenset[int] = frozenset()
+    admin_usernames: frozenset[str] = frozenset()
+    admin_roles: frozenset[int] = frozenset()
+    mod_roles: frozenset[int] = frozenset()
+    mod_usernames: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
 class Decision:
     allowed: bool
     reason: str = ""
@@ -82,12 +98,14 @@ class Decision:
     note: str = ""
 
 
-def tier_for(user_id: int, role_ids: set[int], admin_ids: set[int],
-             admin_roles: set[int], mod_roles: set[int]) -> int:
+def tier_for(user_id: int, username: str, role_ids: set[int], grants: Grants) -> int:
     """Resolve a caller to a tier. Highest match wins."""
-    if user_id in admin_ids or (role_ids & admin_roles):
+    name = (username or "").lower()
+    if (user_id in grants.admin_ids
+            or name in grants.admin_usernames
+            or (set(role_ids) & grants.admin_roles)):
         return TIER_ADMIN
-    if role_ids & mod_roles:
+    if name in grants.mod_usernames or (set(role_ids) & grants.mod_roles):
         return TIER_MOD
     return TIER_READ
 
@@ -132,8 +150,4 @@ def check(command: str, tier: int) -> Decision:
 
 def allowed_at(tier: int) -> list[str]:
     """Human-readable summary of what a tier can run, for a help command."""
-    out = []
-    for rule in RULES:
-        if rule.tier <= tier:
-            out.append(rule.pattern.pattern.strip("^$"))
-    return out
+    return [r.pattern.pattern.strip("^$") for r in RULES if r.tier <= tier]

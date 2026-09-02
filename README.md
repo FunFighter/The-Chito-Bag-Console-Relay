@@ -44,8 +44,14 @@ while permitting either of those protects nothing. `execute`, `data`, `fill`,
 `setblock`, `give`, `summon`, `gamemode` and `tp` are refused at **every**
 tier, with a message explaining why rather than a bare "no".
 
-Admin is granted by **user id**, not role, so tier 2 cannot be handed out by
-editing Discord roles.
+Admin is granted per person (`ADMIN_USERNAMES` or `ADMIN_USER_IDS`) rather than
+by role, so tier 2 cannot be handed out by editing Discord roles. The bot
+refuses to start with no admin configured.
+
+Usernames are accepted because they are what people actually know, but they
+are **mutable** — Discord lets anyone change their handle, and a freed handle
+can later be claimed by someone else. User IDs are permanent and are the
+stronger grant; move to `ADMIN_USER_IDS` once you have collected them.
 
 ## Chat bridge
 
@@ -91,7 +97,7 @@ The Minecraft server must be running first, since the network comes from it.
 python3 -m pytest tests -q
 ```
 
-56 tests, weighted toward the parts where a mistake matters: the allowlist
+62 tests, weighted toward the parts where a mistake matters: the allowlist
 (including `execute`/`data` bypasses, newline smuggling, partial matches, and
 selector arguments like `@a` in place of a player name), `tellraw` injection,
 and log rotation — a tail that holds a file descriptor follows the old inode
