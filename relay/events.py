@@ -78,3 +78,22 @@ def parse(line: str) -> Event | None:
         if any(rest.startswith(v) or f" {v}" in f" {rest}" for v in _DEATH_VERBS):
             return Event(DEATH, d.group("who"), rest, line)
     return None
+
+
+# Numbers, coordinates, uuids, hex ids and paths vary between otherwise
+# identical errors. Blanking them lets repeats of the same fault collapse.
+_SIG_SUBS = (
+    (re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"), "<uuid>"),
+    (re.compile(r"\b0x[0-9a-fA-F]+\b"), "<hex>"),
+    (re.compile(r"-?\d+\.\d+"), "<f>"),
+    (re.compile(r"-?\d+"), "<n>"),
+    (re.compile(r"/[\w./-]{6,}"), "<path>"),
+)
+
+
+def signature(text: str) -> str:
+    """Collapse an error message to a stable signature for deduplication."""
+    out = text.strip()
+    for pat, rep in _SIG_SUBS:
+        out = pat.sub(rep, out)
+    return re.sub(r"\s+", " ", out)[:300]

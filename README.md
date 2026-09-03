@@ -95,8 +95,16 @@ commands are registered there and it cannot post there.
 
 ## Chat bridge
 
-In-game chat, joins, leaves, deaths, advancements, and `ERROR`/`FATAL` lines
-are relayed to `CONSOLE_CHANNEL_ID`. Events are batched every few seconds —
+In-game chat, joins, leaves, deaths and advancements are relayed to
+`CONSOLE_CHANNEL_ID`. `ERROR`/`FATAL` lines go to `ERROR_CHANNEL_ID` instead,
+if set.
+
+Errors are **coalesced by fault**, not relayed line by line. This pack emits
+around 690 ERROR lines per boot from only 11 distinct causes (measured), so
+one line per error would bury the channel and tell you nothing the first one
+did not. Identifiers, numbers, coordinates and paths are blanked to form a
+signature; identical signatures collapse to a single line with a count, and a
+signature is not repeated within `ERROR_REPEAT_SECONDS` (default 900). Events are batched every few seconds —
 this pack is loud enough that unbatched relay hits Discord's rate limit within
 about a minute.
 
@@ -137,7 +145,7 @@ The Minecraft server must be running first, since the network comes from it.
 python3 -m pytest tests -q
 ```
 
-83 tests, weighted toward the parts where a mistake matters: the allowlist
+93 tests, weighted toward the parts where a mistake matters: the allowlist
 (including `execute`/`data` bypasses, newline smuggling, partial matches, and
 selector arguments like `@a` in place of a player name), `tellraw` injection,
 and log rotation — a tail that holds a file descriptor follows the old inode

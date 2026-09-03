@@ -52,6 +52,7 @@ class Config:
     console_channel: int = 0
     bridge_channel: int = 0
     audit_channel: int = 0
+    error_channel: int = 0
 
     admin_users: set[int] = field(default_factory=set)
     admin_usernames: set[str] = field(default_factory=set)
@@ -69,6 +70,10 @@ class Config:
     rate_per_user: int = 8
     rate_window: int = 60
     flush_seconds: float = 3.0
+    # Errors are batched more slowly than chat, and an identical error is not
+    # repeated inside the repeat window however many times it fires.
+    error_flush_seconds: float = 10.0
+    error_repeat_seconds: float = 900.0
 
     @property
     def allowed_channels(self) -> frozenset[int]:
@@ -78,7 +83,8 @@ class Config:
         leak a message into some other channel by accident.
         """
         ids = set(self.command_channels)
-        for c in (self.console_channel, self.bridge_channel, self.audit_channel):
+        for c in (self.console_channel, self.bridge_channel, self.audit_channel,
+                  self.error_channel):
             if c:
                 ids.add(c)
         return frozenset(ids)
@@ -117,6 +123,7 @@ def load() -> Config:
         console_channel=_int("CONSOLE_CHANNEL_ID", 0),
         bridge_channel=_int("BRIDGE_CHANNEL_ID", 0),
         audit_channel=_int("AUDIT_CHANNEL_ID", 0),
+        error_channel=_int("ERROR_CHANNEL_ID", 0),
         admin_users=_ids("ADMIN_USER_IDS"),
         admin_usernames=_names("ADMIN_USERNAMES"),
         admin_roles=_ids("ADMIN_ROLE_IDS"),
@@ -125,6 +132,7 @@ def load() -> Config:
         bridge_to_game=os.environ.get("BRIDGE_TO_GAME", "false").lower() == "true",
         rate_per_user=_int("RATE_PER_USER", 8),
         rate_window=_int("RATE_WINDOW", 60),
+        error_repeat_seconds=float(_int("ERROR_REPEAT_SECONDS", 900)),
     )
     if not cfg.rcon_password:
         raise ConfigError(f"no RCON password readable at {cfg.rcon_password_file}")

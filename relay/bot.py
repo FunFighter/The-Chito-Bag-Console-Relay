@@ -58,6 +58,8 @@ class Relay(discord.Client):
         self.limiter = RateLimiter(cfg.rate_per_user, cfg.rate_window)
         self._allowed = cfg.allowed_channels
         self._outbox: list[str] = []
+        self._errbox: dict[str, int] = {}
+        self._err_seen: dict[str, float] = {}
         self._lock = asyncio.Lock()
 
     # -- lifecycle --------------------------------------------------------
@@ -93,6 +95,8 @@ class Relay(discord.Client):
         log.info("may post only in: %s", sorted(self._allowed))
         self.loop.create_task(self._tail_log())
         self.loop.create_task(self._flush_loop())
+        if self.cfg.error_channel:
+            self.loop.create_task(self._error_loop())
 
     async def on_ready(self) -> None:
         log.info("connected as %s", self.user)
@@ -128,7 +132,10 @@ class Relay(discord.Client):
             ev = events.parse(line)
             if ev is None or not wanted.get(ev.kind):
                 continue
-            self._outbox.append(self._render(ev))
+            if ev.kind == events.SEVERE and self.cfg.error_channel:
+                self._note_error(ev.text)
+            else:
+                self._outbox.append(self._render(ev))
 
     def _render(self, ev: events.Event) -> str:
         who = sanitize.defang_for_discord(ev.who)
@@ -144,6 +151,50 @@ class Relay(discord.Client):
         if ev.kind == events.ADVANCEMENT:
             return f"{_ICON[ev.kind]} **{who}** earned *{text}*"
         return f"{_ICON[events.SEVERE]} `{text[:300]}`"
+
+    def _note_error(self, text: str) -> None:
+        """Coalesce errors by signature.
+
+        This pack emits ~690 ERROR lines per boot from only 11 distinct
+        causes -- measured. Relaying each one would bury the channel and tell
+        you nothing you could not learn from the first. So identical errors
+        are counted, and each signature is reported at most once per window.
+        """
+        sig = events.signature(text)
+        self._errbox[sig] = self._errbox.get(sig, 0) + 1
+
+    async def _error_loop(self) -> None:
+        await self.wait_until_ready()
+        window = self.cfg.error_repeat_seconds
+        while not self.is_closed():
+            await asyncio.sleep(self.cfg.error_flush_seconds)
+            if not self._errbox:
+                continue
+            async with self._lock:
+                batch, self._errbox = self._errbox, {}
+            now = time.monotonic()
+            chan = self.get_channel(self.cfg.error_channel)
+            if chan is None:
+                continue
+            lines = []
+            for sig, count in sorted(batch.items(), key=lambda kv: -kv[1]):
+                last = self._err_seen.get(sig, 0)
+                if now - last < window:
+                    continue          # already reported recently
+                self._err_seen[sig] = now
+                suffix = f"  *(x{count})*" if count > 1 else ""
+                lines.append(f"{_ICON[events.SEVERE]} `{sig[:280]}`{suffix}")
+            if not lines:
+                continue
+            body = ""
+            for line in lines[:15]:
+                if len(body) + len(line) + 1 > DISCORD_LIMIT:
+                    await self._send(chan, body); body = ""
+                body += line + "\n"
+            if len(lines) > 15:
+                body += f"*… {len(lines) - 15} more distinct errors suppressed*\n"
+            if body:
+                await self._send(chan, body)
 
     async def _flush_loop(self) -> None:
         """Batch log events. Unbatched relay hits Discord's rate limit fast."""
