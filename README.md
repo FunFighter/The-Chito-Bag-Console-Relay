@@ -112,9 +112,12 @@ invented ones.
 Deliberately manual, because this repo has no runner of its own:
 
 ```bash
-ssh brandonl@192.168.50.10
+ssh minecraft@192.168.50.10
 cd /srv/chitobag/relay && git pull && docker compose up -d --build
 ```
+
+Runs as the `minecraft` service account (uid 1001), which is in the `docker`
+group; nothing here needs root.
 
 To automate it, register a second self-hosted runner instance on `wonton`
 against this repo — a runner belongs to one repository, so the Minecraft
