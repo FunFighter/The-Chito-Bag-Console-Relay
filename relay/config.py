@@ -71,6 +71,19 @@ class Config:
     flush_seconds: float = 3.0
 
     @property
+    def allowed_channels(self) -> frozenset[int]:
+        """Every channel this bot may post in. Nothing else, ever.
+
+        Enforced centrally in the send path, so a future code path cannot
+        leak a message into some other channel by accident.
+        """
+        ids = set(self.command_channels)
+        for c in (self.console_channel, self.bridge_channel, self.audit_channel):
+            if c:
+                ids.add(c)
+        return frozenset(ids)
+
+    @property
     def grants(self) -> Grants:
         return Grants(
             admin_ids=frozenset(self.admin_users),

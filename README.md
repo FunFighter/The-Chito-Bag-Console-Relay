@@ -57,6 +57,27 @@ are **mutable** — Discord lets anyone change their handle, and a freed handle
 can later be claimed by someone else. User IDs are permanent and are the
 stronger grant; move to `ADMIN_USER_IDS` once you have collected them.
 
+## Channel lockdown
+
+The bot acts and speaks in exactly the configured channel, enforced in four
+places rather than one:
+
+- **Slash commands are registered to a single guild**, resolved from the
+  channel itself at startup. Registered globally they would appear in every
+  server the bot joins and in every channel of those servers — the per-call
+  check would refuse them, but they would still be listed and still draw a
+  reply.
+- **Every send goes through one chokepoint** that drops and logs anything
+  addressed outside `Config.allowed_channels`. A future code path cannot leak
+  a message elsewhere by accident.
+- **The game-bound bridge ignores DMs and group chats** outright, and matches
+  the channel id exactly — a thread inside the channel has its own id and does
+  not count, which is the stricter and intended reading.
+- **Interactions outside a guild are refused** before any tier check runs.
+
+If the bot is a member of any other server, it logs a warning on connect: no
+commands are registered there and it cannot post there.
+
 ## Chat bridge
 
 In-game chat, joins, leaves, deaths, advancements, and `ERROR`/`FATAL` lines
@@ -101,7 +122,7 @@ The Minecraft server must be running first, since the network comes from it.
 python3 -m pytest tests -q
 ```
 
-62 tests, weighted toward the parts where a mistake matters: the allowlist
+69 tests, weighted toward the parts where a mistake matters: the allowlist
 (including `execute`/`data` bypasses, newline smuggling, partial matches, and
 selector arguments like `@a` in place of a player name), `tellraw` injection,
 and log rotation — a tail that holds a file descriptor follows the old inode

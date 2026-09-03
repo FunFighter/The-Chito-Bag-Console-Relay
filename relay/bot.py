@@ -53,21 +53,53 @@ class Relay(discord.Client):
         intents.message_content = bool(cfg.bridge_to_game)
         super().__init__(intents=intents)
         self.cfg = cfg
+        self._guild_id: int | None = None
         self.tree = app_commands.CommandTree(self)
         self.limiter = RateLimiter(cfg.rate_per_user, cfg.rate_window)
+        self._allowed = cfg.allowed_channels
         self._outbox: list[str] = []
         self._lock = asyncio.Lock()
 
     # -- lifecycle --------------------------------------------------------
 
     async def setup_hook(self) -> None:
-        register(self)
-        await self.tree.sync()
+        # Resolve the guild from the channel itself, so /mc is registered only
+        # there. Registered globally, the commands would appear in every
+        # server the bot is in and in every channel of those servers -- the
+        # per-call channel check would refuse them, but they would still be
+        # listed and still draw a reply.
+        guild = None
+        primary = self.cfg.console_channel or next(iter(self.cfg.command_channels))
+        try:
+            chan = await self.fetch_channel(primary)
+            gid = getattr(getattr(chan, "guild", None), "id", None)
+            if gid:
+                guild = discord.Object(id=gid)
+                self._guild_id = gid
+        except discord.HTTPException as exc:
+            log.error("could not resolve the guild for channel %s: %s", primary, exc)
+
+        register(self, guild)
+        if guild is not None:
+            await self.tree.sync(guild=guild)
+            # Push an empty global set, clearing any previously global copy.
+            self.tree.clear_commands(guild=None)
+            await self.tree.sync()
+            log.info("commands registered to guild %s only", self._guild_id)
+        else:
+            log.error("no guild resolved; commands NOT registered (channel "
+                      "%s unreachable -- check the bot can see it)", primary)
+
+        log.info("may post only in: %s", sorted(self._allowed))
         self.loop.create_task(self._tail_log())
         self.loop.create_task(self._flush_loop())
 
     async def on_ready(self) -> None:
         log.info("connected as %s", self.user)
+        for g in self.guilds:
+            if self._guild_id and g.id != self._guild_id:
+                log.warning("also a member of guild %s (%s) -- no commands are "
+                            "registered there and it cannot post there", g.id, g.name)
 
     # -- RCON -------------------------------------------------------------
 
@@ -139,6 +171,13 @@ class Relay(discord.Client):
                 await self._send(chan, body)
 
     async def _send(self, chan, body: str) -> None:
+        # Single chokepoint for everything the bot says. Anything outside the
+        # configured channels is dropped and logged rather than posted.
+        cid = getattr(chan, "id", None)
+        if cid not in self._allowed:
+            log.error("refusing to post in channel %s (not in %s)", cid,
+                      sorted(self._allowed))
+            return
         try:
             await chan.send(body, allowed_mentions=discord.AllowedMentions.none())
         except discord.HTTPException as exc:
@@ -149,6 +188,12 @@ class Relay(discord.Client):
     async def on_message(self, message: discord.Message) -> None:
         if not self.cfg.bridge_to_game or message.author.bot:
             return
+        # No DMs, no group chats: a bridge into the game must come from the
+        # one channel people can be held accountable in.
+        if message.guild is None:
+            return
+        # Exact match: a thread inside the channel has its own id and does not
+        # count, which is the stricter and intended reading.
         if message.channel.id != self.cfg.bridge_channel:
             return
         text = message.clean_content  # resolves mentions to readable names
@@ -206,7 +251,7 @@ class ConfirmView(discord.ui.View):
         self.stop()
 
 
-def register(client: Relay) -> None:
+def register(client: Relay, guild: discord.Object | None = None) -> None:
     cfg = client.cfg
     group = app_commands.Group(name="mc", description="Minecraft server console")
 
@@ -215,6 +260,10 @@ def register(client: Relay) -> None:
         return authz.tier_for(inter.user.id, inter.user.name, roles, cfg.grants)
 
     async def guard(inter: discord.Interaction) -> bool:
+        if inter.guild_id is None:
+            await inter.response.send_message(
+                "This bot only works in its server channel.", ephemeral=True)
+            return False
         if inter.channel_id not in cfg.command_channels:
             await inter.response.send_message(
                 "Not a command channel for this server.", ephemeral=True)
@@ -308,10 +357,15 @@ def register(client: Relay) -> None:
 
     @group.command(name="whoami", description="Show your permission tier")
     async def whoami(inter: discord.Interaction):
+        if not await guard(inter):
+            return
         tier = caller_tier(inter)
         await inter.response.send_message(
             f"You are **{authz.TIER_NAMES[tier]}** (tier {tier}).\n"
             f"Allowed: `" + "`, `".join(authz.allowed_at(tier)[:14]) + "`",
             ephemeral=True)
 
-    client.tree.add_command(group)
+    if guild is not None:
+        client.tree.add_command(group, guild=guild)
+    else:
+        client.tree.add_command(group)
