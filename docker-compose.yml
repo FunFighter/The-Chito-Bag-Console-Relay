@@ -17,6 +17,12 @@ services:
     # rather than crash-looping.
     stop_grace_period: 15s
 
+    # Must match whoever owns /srv/chitobag/data, because .rcon_password is
+    # mode 600. The image builds a uid-1000 user, but the data is owned by the
+    # `minecraft` service account (1001), so pin it here rather than baking a
+    # uid into the image.
+    user: "${PUID:-1001}:${PGID:-1001}"
+
     environment:
       DISCORD_TOKEN: ${DISCORD_TOKEN:?set DISCORD_TOKEN in .env}
       RCON_HOST: ${RCON_HOST:-chitobag-server}
@@ -33,6 +39,9 @@ services:
       BRIDGE_TO_GAME: ${BRIDGE_TO_GAME:-false}
       RATE_PER_USER: ${RATE_PER_USER:-8}
       RATE_WINDOW: ${RATE_WINDOW:-60}
+      # discord.py wants a writable HOME for its cache; the default user has
+      # none once we override the uid.
+      HOME: /tmp
 
     volumes:
       # Read-only: the relay needs the RCON password and the log, and must

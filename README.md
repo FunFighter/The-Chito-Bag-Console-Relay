@@ -15,6 +15,10 @@ project never creates or deletes it). It talks to `chitobag-server:25575`.
 **No new host ports.** RCON stays unpublished, exactly as it is today. The only
 inbound path is Discord's own outbound websocket.
 
+The container runs as `PUID:PGID` (1001, the `minecraft` service account) so it
+can read `.rcon_password`, which is mode 600. If you ever change who owns the
+data directory, change these to match or the bot cannot authenticate.
+
 `/srv/chitobag/data` is mounted **read-only** — the relay needs the RCON
 password and `logs/latest.log`, and must never be able to write the world or
 the configs.
