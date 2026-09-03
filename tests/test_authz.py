@@ -32,9 +32,9 @@ def test_reversible_admin_commands_do_not_require_confirmation():
     assert not authz.check("gamerule keepInventory true", TIER_ADMIN).confirm
 
 
-# --- the cases that actually matter -------------------------------------
+# --- escape hatches: refused below admin, permitted at admin -----------
 
-@pytest.mark.parametrize("cmd", [
+ESCAPE_HATCHES = [
     "execute as @a run op Chito_",
     "data modify block 0 0 0 Items set value []",
     "fill 0 0 0 100 100 100 tnt",
@@ -42,36 +42,73 @@ def test_reversible_admin_commands_do_not_require_confirmation():
     "summon creeper",
     "gamemode creative Chito_",
     "tp Chito_ 0 0 0",
-])
-def test_escape_hatches_are_refused_at_every_tier(cmd):
-    for tier in (TIER_READ, TIER_MOD, TIER_ADMIN):
+]
+
+
+@pytest.mark.parametrize("cmd", ESCAPE_HATCHES)
+def test_escape_hatches_refused_below_admin(cmd):
+    for tier in (TIER_READ, TIER_MOD):
         assert not authz.check(cmd, tier).allowed, f"{cmd} allowed at tier {tier}"
 
 
-def test_refusal_explains_why_for_known_dangerous_verbs():
-    d = authz.check("execute run stop", TIER_ADMIN)
+@pytest.mark.parametrize("cmd", ESCAPE_HATCHES)
+def test_admin_may_run_anything(cmd):
+    # Admins hold op level 4 in game and can run these from their own chat,
+    # so blocking them here would obstruct without protecting.
+    assert authz.check(cmd, TIER_ADMIN).allowed, cmd
+
+
+def test_admin_may_run_commands_with_no_rule_at_all():
+    for cmd in ["effect give @a minecraft:glowing 10", "locate structure village",
+                "scoreboard objectives list", "tellraw @a {\"text\":\"hi\"}"]:
+        assert authz.check(cmd, TIER_ADMIN).allowed, cmd
+
+
+def test_admin_destructive_commands_still_confirm():
+    for cmd in ["stop", "op Chito_", "ban Keynash", "save-off",
+                "kill @a", "datapack disable \"file/x.zip\"", "forceload add 0 0"]:
+        d = authz.check(cmd, TIER_ADMIN)
+        assert d.allowed, cmd
+        assert d.confirm, f"{cmd} should require confirmation"
+
+
+def test_admin_ordinary_commands_do_not_confirm():
+    for cmd in ["list", "time set day", "gamerule keepInventory true",
+                "effect clear @a"]:
+        assert not authz.check(cmd, TIER_ADMIN).confirm, cmd
+
+
+def test_refusal_below_admin_explains_why():
+    d = authz.check("execute run stop", TIER_MOD)
     assert not d.allowed
-    assert "bypass" in d.reason
+    assert "admin-only" in d.reason
 
 
 def test_leading_slash_is_stripped_not_a_bypass():
     assert authz.check("/list", TIER_READ).allowed
-    assert not authz.check("//execute run stop", TIER_ADMIN).allowed
+    # Slashes are stripped, so this is just `execute` -- refused below admin.
+    assert not authz.check("//execute run stop", TIER_MOD).allowed
 
 
-def test_newline_smuggling_is_refused():
-    # Without the newline check, an approved prefix could carry a second
-    # command that the pattern never saw.
-    assert not authz.check("list\nop Chito_", TIER_ADMIN).allowed
-    assert not authz.check("list\r\nstop", TIER_ADMIN).allowed
-
-
-def test_partial_match_does_not_pass():
-    # 'list' is allowed; 'listen' must not inherit that.
-    assert not authz.check("listen", TIER_ADMIN).allowed
+def test_partial_match_does_not_pass_below_admin():
+    # 'list' is allowed at tier 0; 'listen' must not inherit that.
+    assert not authz.check("listen", TIER_MOD).allowed
     # A trailing payload after an exact-match rule must not slip through.
-    assert not authz.check("stop; rm -rf /", TIER_ADMIN).allowed
-    assert not authz.check("seed && op Chito_", TIER_ADMIN).allowed
+    assert not authz.check("stop; rm -rf /", TIER_MOD).allowed
+    assert not authz.check("seed && op Chito_", TIER_MOD).allowed
+
+
+def test_newlines_refused_even_for_admins():
+    # One command per call, at every tier. This is a correctness rule, not a
+    # policy one: a second line would run unseen by the confirmation prompt.
+    assert not authz.check("list\nop Chito_", TIER_ADMIN).allowed
+    assert not authz.check("say hi\r\nstop", TIER_ADMIN).allowed
+
+
+def test_empty_command_refused_for_admins():
+    assert not authz.check("", TIER_ADMIN).allowed
+    assert not authz.check("   ", TIER_ADMIN).allowed
+    assert not authz.check("///", TIER_ADMIN).allowed
 
 
 def test_player_argument_is_constrained():
@@ -143,3 +180,24 @@ def test_unknown_user_defaults_to_read_only():
     assert authz.tier_for(12345, "nobody", set(), _g()) == TIER_READ
     # Empty/missing username must not match an empty grant set by accident.
     assert authz.tier_for(12345, "", set(), _g(admin_usernames=set())) == TIER_READ
+
+
+# --- help output ---------------------------------------------------------
+
+def test_usage_strings_are_readable_not_regex():
+    for tier in (TIER_READ, TIER_MOD, TIER_ADMIN):
+        for u in authz.usage_at(tier):
+            assert "\\s" not in u and "[A-Za-z" not in u, u
+            assert not u.startswith("^"), u
+
+
+def test_allowed_at_is_cumulative():
+    r, m = authz.allowed_at(TIER_READ), authz.allowed_at(TIER_MOD)
+    assert set(r).issubset(set(m))
+    assert len(m) > len(r)
+
+
+def test_confirm_verbs_cover_the_dangerous_ones():
+    v = authz.confirm_verbs()
+    for expected in ("stop", "op", "ban", "save-off", "kill"):
+        assert expected in v

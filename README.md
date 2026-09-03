@@ -27,6 +27,7 @@ the configs.
 
 | Command | Tier | Notes |
 |---|---|---|
+| `/mc help` | read-only | What you can run, with examples |
 | `/mc players` | read-only | Who is online |
 | `/mc whoami` | read-only | Your tier and what it permits |
 | `/mc say <message>` | moderator | Broadcast via `tellraw` |
@@ -37,16 +38,30 @@ the configs.
 - **Tier 0, read-only** — `list`, `seed`, `whitelist list`, `datapack list`
 - **Tier 1, moderator** — `kick`, `weather`, `time set`, `whitelist add|remove`,
   `save-all`, `difficulty`
-- **Tier 2, admin** — `op`, `deop`, `ban`, `pardon`, `gamerule`, `save-off`,
-  `stop`. Privilege changes and outages require button confirmation.
+- **Tier 2, admin** — **any console command**, exactly as if typed into the
+  server console.
 
-### Why allowlist and not denylist
+### Why tiers 0 and 1 are allowlists but tier 2 is not
 
-A denylist cannot work. `execute run <anything>` wraps every other command and
-`data modify` rewrites arbitrary block and entity state, so blocking `stop`
-while permitting either of those protects nothing. `execute`, `data`, `fill`,
-`setblock`, `give`, `summon`, `gamemode` and `tp` are refused at **every**
-tier, with a message explaining why rather than a bare "no".
+At the lower tiers a denylist cannot work: `execute run <anything>` wraps every
+other command and `data modify` rewrites arbitrary block and entity state, so
+blocking `stop` while permitting either of those protects nothing. Those tiers
+are therefore allowlist-only, and `execute`, `data`, `fill`, `setblock`,
+`give`, `summon`, `gamemode` and `tp` are refused with a message explaining why
+rather than a bare "no".
+
+Admins are unrestricted, and that is deliberate. They already hold **op level
+4 in game**, so they can run `execute` and `data` from their own chat window
+regardless — an allowlist here would obstruct the administration the bot exists
+to do without preventing anything. What still applies at tier 2:
+
+- the channel lockdown, so it can only be done from one place
+- the audit log, so every command has a name attached
+- rate limiting
+- button confirmation for `stop`, `op`, `deop`, `ban`, `ban-ip`, `save-off`,
+  `kill`, `datapack` and `forceload`
+- one command per call — an embedded newline is refused at every tier, so a
+  second command cannot ride along unseen by the confirmation prompt
 
 Admin is granted per person (`ADMIN_USERNAMES` or `ADMIN_USER_IDS`) rather than
 by role, so tier 2 cannot be handed out by editing Discord roles. The bot
@@ -122,7 +137,7 @@ The Minecraft server must be running first, since the network comes from it.
 python3 -m pytest tests -q
 ```
 
-69 tests, weighted toward the parts where a mistake matters: the allowlist
+83 tests, weighted toward the parts where a mistake matters: the allowlist
 (including `execute`/`data` bypasses, newline smuggling, partial matches, and
 selector arguments like `@a` in place of a player name), `tellraw` injection,
 and log rotation — a tail that holds a file descriptor follows the old inode

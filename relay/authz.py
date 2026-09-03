@@ -1,11 +1,22 @@
 """Who may run what.
 
-Authorisation is allowlist-only. A denylist cannot work here: `execute run`
-wraps any other command and `data modify` rewrites arbitrary block and entity
-state, so blocking `stop` while permitting either of those protects nothing.
+Tiers 0 and 1 are allowlist-only: a fully anchored pattern per command, and
+anything not matching a rule at or below the caller's tier is refused. A
+denylist would be useless at those tiers, since `execute run` wraps any other
+command and `data modify` rewrites arbitrary block and entity state.
 
-Every rule is a fully anchored pattern for a complete command. If a command
-does not match a rule at or below the caller's tier, it is refused.
+Tier 2 (admin) may run **any** console command. That is a deliberate choice,
+not an oversight: the admins are already op level 4 in game, so they can run
+`execute` and `data` from their own chat window regardless. Restricting them
+here would protect nothing they could not already do, while making the bot
+useless for the administration it exists to do.
+
+What still applies at tier 2:
+  - the channel lockdown, so it can only be done from one place
+  - the audit log, so every command has a name attached
+  - rate limiting
+  - button confirmation for commands that end sessions or grant privileges
+  - one command per call: embedded newlines are always refused
 """
 from __future__ import annotations
 
@@ -25,44 +36,47 @@ _PLAYER = r"[A-Za-z0-9_]{3,16}"
 class Rule:
     tier: int
     pattern: re.Pattern
+    usage: str = ""
     confirm: bool = False
     note: str = ""
 
 
-def _r(tier: int, pattern: str, confirm: bool = False, note: str = "") -> Rule:
-    return Rule(tier, re.compile(rf"^{pattern}$", re.IGNORECASE), confirm, note)
+def _r(tier: int, pattern: str, usage: str = "", confirm: bool = False,
+       note: str = "") -> Rule:
+    return Rule(tier, re.compile(rf"^{pattern}$", re.IGNORECASE), usage,
+                confirm, note)
 
 
 # Ordered only for readability; matching checks all of them.
 RULES: tuple[Rule, ...] = (
     # -- tier 0: cannot change game state ---------------------------------
-    _r(TIER_READ, r"list"),
-    _r(TIER_READ, r"seed"),
-    _r(TIER_READ, r"whitelist list"),
-    _r(TIER_READ, r"datapack list(\s+(available|enabled))?"),
+    _r(TIER_READ, r"list", "list"),
+    _r(TIER_READ, r"seed", "seed"),
+    _r(TIER_READ, r"whitelist list", "whitelist list"),
+    _r(TIER_READ, r"datapack list(\s+(available|enabled))?", "datapack list"),
     # -- tier 1: reversible and visible -----------------------------------
-    _r(TIER_MOD, rf"kick\s+{_PLAYER}(\s+.{{1,120}})?"),
-    _r(TIER_MOD, r"weather\s+(clear|rain|thunder)(\s+\d{1,6})?"),
-    _r(TIER_MOD, r"time\s+set\s+(day|night|noon|midnight|\d{1,6})"),
-    _r(TIER_MOD, rf"whitelist\s+(add|remove)\s+{_PLAYER}"),
-    _r(TIER_MOD, r"whitelist\s+(on|off|reload)"),
-    _r(TIER_MOD, r"save-all(\s+flush)?"),
-    _r(TIER_MOD, r"difficulty(\s+(peaceful|easy|normal|hard))?"),
+    _r(TIER_MOD, rf"kick\s+{_PLAYER}(\s+.{{1,120}})?", "kick <player> [reason]"),
+    _r(TIER_MOD, r"weather\s+(clear|rain|thunder)(\s+\d{1,6})?", "weather clear|rain|thunder [ticks]"),
+    _r(TIER_MOD, r"time\s+set\s+(day|night|noon|midnight|\d{1,6})", "time set day|night|noon|midnight|<ticks>"),
+    _r(TIER_MOD, rf"whitelist\s+(add|remove)\s+{_PLAYER}", "whitelist add|remove <player>"),
+    _r(TIER_MOD, r"whitelist\s+(on|off|reload)", "whitelist on|off|reload"),
+    _r(TIER_MOD, r"save-all(\s+flush)?", "save-all [flush]"),
+    _r(TIER_MOD, r"difficulty(\s+(peaceful|easy|normal|hard))?", "difficulty [peaceful|easy|normal|hard]"),
     # -- tier 2: privilege changes and outages ----------------------------
-    _r(TIER_ADMIN, rf"op\s+{_PLAYER}", confirm=True, note="grants full server admin"),
-    _r(TIER_ADMIN, rf"deop\s+{_PLAYER}", confirm=True),
-    _r(TIER_ADMIN, rf"ban\s+{_PLAYER}(\s+.{{1,120}})?", confirm=True),
-    _r(TIER_ADMIN, rf"pardon\s+{_PLAYER}", confirm=True),
-    _r(TIER_ADMIN, r"ban-ip\s+\S{1,45}(\s+.{1,120})?", confirm=True),
-    _r(TIER_ADMIN, r"gamerule\s+[A-Za-z]{1,40}(\s+\S{1,20})?"),
-    _r(TIER_ADMIN, r"save-off", confirm=True, note="disables world saving"),
-    _r(TIER_ADMIN, r"save-on"),
-    _r(TIER_ADMIN, r"stop", confirm=True, note="ends the session for everyone"),
+    _r(TIER_ADMIN, rf"op\s+{_PLAYER}", "op <player>", confirm=True, note="grants full server admin"),
+    _r(TIER_ADMIN, rf"deop\s+{_PLAYER}", "deop <player>", confirm=True),
+    _r(TIER_ADMIN, rf"ban\s+{_PLAYER}(\s+.{{1,120}})?", "ban <player> [reason]", confirm=True),
+    _r(TIER_ADMIN, rf"pardon\s+{_PLAYER}", "pardon <player>", confirm=True),
+    _r(TIER_ADMIN, r"ban-ip\s+\S{1,45}(\s+.{1,120})?", "ban-ip <ip> [reason]", confirm=True),
+    _r(TIER_ADMIN, r"gamerule\s+[A-Za-z]{1,40}(\s+\S{1,20})?", "gamerule <rule> [value]"),
+    _r(TIER_ADMIN, r"save-off", "save-off", confirm=True, note="disables world saving"),
+    _r(TIER_ADMIN, r"save-on", "save-on"),
+    _r(TIER_ADMIN, r"stop", "stop", confirm=True, note="ends the session for everyone"),
 )
 
-# Named so a refusal can explain itself instead of just saying "no".
+# Verbs a non-admin might reasonably try, with a reason rather than a bare no.
 _EXPLAIN = {
-    "execute": "wraps arbitrary commands, so allowing it would bypass every other rule",
+    "execute": "wraps arbitrary commands, so it is admin-only",
     "data": "can rewrite arbitrary block and entity state",
     "fill": "can overwrite terrain in bulk",
     "setblock": "can overwrite terrain",
@@ -71,6 +85,20 @@ _EXPLAIN = {
     "gamemode": "hands out creative mode",
     "tp": "moves players without consent",
     "teleport": "moves players without consent",
+}
+
+# Admins may run anything, but these get a confirmation button: they either end
+# everyone's session, change who holds privileges, or risk the world.
+_ADMIN_CONFIRM = {
+    "stop": "ends the session for everyone",
+    "op": "grants full server admin",
+    "deop": "removes server admin",
+    "ban": "bans a player",
+    "ban-ip": "bans an address",
+    "save-off": "disables world saving",
+    "kill": "can wipe every entity or player at once",
+    "datapack": "can disable a datapack the world depends on",
+    "forceload": "can pin chunks loaded indefinitely",
 }
 
 
@@ -129,6 +157,16 @@ def check(command: str, tier: int) -> Decision:
 
     verb = cmd.split(" ", 1)[0].lower()
 
+    # Admins are unrestricted. They already hold op level 4 in game, so an
+    # allowlist here would only obstruct, not protect.
+    if tier >= TIER_ADMIN:
+        for rule in RULES:
+            if rule.tier <= TIER_ADMIN and rule.pattern.match(cmd):
+                return Decision(True, confirm=rule.confirm, note=rule.note)
+        if verb in _ADMIN_CONFIRM:
+            return Decision(True, confirm=True, note=_ADMIN_CONFIRM[verb])
+        return Decision(True)
+
     best: Rule | None = None
     for rule in RULES:
         if rule.pattern.match(cmd):
@@ -148,6 +186,23 @@ def check(command: str, tier: int) -> Decision:
     return Decision(True, confirm=best.confirm, note=best.note)
 
 
+def usage_at(tier: int) -> list[str]:
+    """Commands available at exactly `tier`, as readable usage strings."""
+    seen, out = set(), []
+    for r in RULES:
+        if r.tier == tier and r.usage and r.usage not in seen:
+            seen.add(r.usage)
+            out.append(r.usage + ("  (confirm)" if r.confirm else ""))
+    return out
+
+
 def allowed_at(tier: int) -> list[str]:
-    """Human-readable summary of what a tier can run, for a help command."""
-    return [r.pattern.pattern.strip("^$") for r in RULES if r.tier <= tier]
+    """Everything a tier can run, cumulative, for a short summary."""
+    out = []
+    for t in range(0, tier + 1):
+        out.extend(usage_at(t))
+    return out
+
+
+def confirm_verbs() -> list[str]:
+    return sorted(_ADMIN_CONFIRM)

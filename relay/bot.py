@@ -355,15 +355,74 @@ def register(client: Relay, guild: discord.Object | None = None) -> None:
             await inter.response.defer()
         await execute(inter, normalised, ephemeral=decision.confirm)
 
+    @group.command(name="help", description="What you can run, and how")
+    async def help_cmd(inter: discord.Interaction):
+        if not await guard(inter):
+            return
+        tier = caller_tier(inter)
+        lines = [
+            "**Slash commands**",
+            "`/mc help` — this message",
+            "`/mc players` — who is online",
+            "`/mc whoami` — your permission tier",
+            "`/mc say <message>` — broadcast in game *(moderator)*",
+            "`/mc run <command>` — run a console command",
+            "",
+            f"**Your tier: {authz.TIER_NAMES[tier]}**",
+        ]
+
+        if tier >= authz.TIER_ADMIN:
+            lines += [
+                "You can run **any** console command through `/mc run`, "
+                "exactly as if you typed it into the server console.",
+                "",
+                "These ask for a confirmation button first:",
+                "`" + "`, `".join(authz.confirm_verbs()) + "`",
+                "",
+                "*Examples*",
+                "`/mc run time set day`",
+                "`/mc run gamerule keepInventory true`",
+                "`/mc run execute as @a run effect give @s minecraft:glowing 10`",
+                "`/mc run data get entity @p Pos`",
+            ]
+        else:
+            for t in range(0, tier + 1):
+                cmds = authz.usage_at(t)
+                if cmds:
+                    lines += ["", f"*{authz.TIER_NAMES[t]}*",
+                              "`" + "`\n`".join(cmds) + "`"]
+            higher = [authz.TIER_NAMES[t] for t in range(tier + 1, 3)]
+            if higher:
+                lines += ["", "Higher tiers (" + ", ".join(higher) +
+                          ") can run more. Ask an admin."]
+
+        lines += [
+            "",
+            "**Chat bridge** — anything you type in this channel goes into the "
+            "game, and in-game chat, joins, deaths and advancements come back "
+            "here. Drop the leading slash: `/mc run list`, not `/list`.",
+        ]
+        body = "\n".join(lines)
+        if len(body) > DISCORD_LIMIT:
+            body = body[:DISCORD_LIMIT] + "\n*(truncated)*"
+        await inter.response.send_message(
+            body, ephemeral=True,
+            allowed_mentions=discord.AllowedMentions.none())
+
     @group.command(name="whoami", description="Show your permission tier")
     async def whoami(inter: discord.Interaction):
         if not await guard(inter):
             return
         tier = caller_tier(inter)
+        if tier >= authz.TIER_ADMIN:
+            detail = "You can run any console command. See `/mc help`."
+        else:
+            allowed = authz.allowed_at(tier)
+            detail = ("Allowed: `" + "`, `".join(allowed) + "`"
+                      if allowed else "No commands available.")
         await inter.response.send_message(
-            f"You are **{authz.TIER_NAMES[tier]}** (tier {tier}).\n"
-            f"Allowed: `" + "`, `".join(authz.allowed_at(tier)[:14]) + "`",
-            ephemeral=True)
+            f"You are **{authz.TIER_NAMES[tier]}** (tier {tier}).\n{detail}",
+            ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     if guild is not None:
         client.tree.add_command(group, guild=guild)
