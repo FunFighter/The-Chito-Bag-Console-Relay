@@ -119,6 +119,23 @@ leading slashes are stripped so a message cannot become a command, Minecraft
 collapse to spaces, and `@everyone`/`@here` are defanged on the way into
 Discord.
 
+## Resilience
+
+The background loops (log tail, console flush, error flush) run under a
+supervisor that restarts them with exponential backoff. They were previously
+bare `create_task` calls, which is fragile in a specific and nasty way: one
+unhandled exception ends the task silently and permanently, while the bot
+still reports itself connected.
+
+That is not hypothetical. A momentary DNS failure raised
+`ClientConnectorDNSError` out of a send, escaped a guard that only caught
+`discord.HTTPException`, and killed both send loops — the relay looked healthy
+and relayed nothing for four days. `_send` now catches broadly on purpose:
+discord.py wraps aiohttp, whose errors are not `discord.HTTPException`.
+
+The console queue is capped at 500 lines so an outage cannot become unbounded
+memory use, and the number dropped is reported when sending recovers.
+
 ## Setup
 
 ```bash
@@ -145,7 +162,7 @@ The Minecraft server must be running first, since the network comes from it.
 python3 -m pytest tests -q
 ```
 
-93 tests, weighted toward the parts where a mistake matters: the allowlist
+99 tests, weighted toward the parts where a mistake matters: the allowlist
 (including `execute`/`data` bypasses, newline smuggling, partial matches, and
 selector arguments like `@a` in place of a player name), `tellraw` injection,
 and log rotation — a tail that holds a file descriptor follows the old inode

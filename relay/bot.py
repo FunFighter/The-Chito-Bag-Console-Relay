@@ -17,6 +17,8 @@ log = logging.getLogger("relay")
 
 # Discord hard-caps a message at 2000 characters.
 DISCORD_LIMIT = 1900
+# Ceiling on queued console lines while the sender is unavailable.
+MAX_OUTBOX = 500
 
 _ICON = {
     events.JOIN: "\N{LARGE GREEN CIRCLE}",
@@ -58,11 +60,34 @@ class Relay(discord.Client):
         self.limiter = RateLimiter(cfg.rate_per_user, cfg.rate_window)
         self._allowed = cfg.allowed_channels
         self._outbox: list[str] = []
+        self._dropped = 0
         self._errbox: dict[str, int] = {}
         self._err_seen: dict[str, float] = {}
         self._lock = asyncio.Lock()
 
     # -- lifecycle --------------------------------------------------------
+
+    async def _supervise(self, name: str, factory) -> None:
+        """Keep a background loop alive across transient failures.
+
+        These loops are the whole point of the bot, and a bare create_task
+        makes them fragile: one unhandled exception ends the task silently and
+        forever. A single DNS blip took the send loops down for four days,
+        with the bot still showing as connected the entire time.
+        """
+        delay = 5.0
+        while not self.is_closed():
+            try:
+                await factory()
+                return                      # completed normally
+            except asyncio.CancelledError:
+                raise                       # shutdown, not a failure
+            except Exception:
+                log.exception("%s died; restarting in %.0fs", name, delay)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 300.0)
+            else:
+                delay = 5.0
 
     async def setup_hook(self) -> None:
         # Resolve the guild from the channel itself, so /mc is registered only
@@ -93,10 +118,10 @@ class Relay(discord.Client):
                       "%s unreachable -- check the bot can see it)", primary)
 
         log.info("may post only in: %s", sorted(self._allowed))
-        self.loop.create_task(self._tail_log())
-        self.loop.create_task(self._flush_loop())
+        self.loop.create_task(self._supervise("log tail", self._tail_log))
+        self.loop.create_task(self._supervise("console flush", self._flush_loop))
         if self.cfg.error_channel:
-            self.loop.create_task(self._error_loop())
+            self.loop.create_task(self._supervise("error flush", self._error_loop))
 
     async def on_ready(self) -> None:
         log.info("connected as %s", self.user)
@@ -136,6 +161,12 @@ class Relay(discord.Client):
                 self._note_error(ev.text)
             else:
                 self._outbox.append(self._render(ev))
+                # If the sender is stalled, drop the oldest rather than grow
+                # forever -- an unbounded queue turns an outage into an OOM.
+                if len(self._outbox) > MAX_OUTBOX:
+                    dropped = len(self._outbox) - MAX_OUTBOX
+                    del self._outbox[:dropped]
+                    self._dropped += dropped
 
     def _render(self, ev: events.Event) -> str:
         who = sanitize.defang_for_discord(ev.who)
@@ -205,6 +236,9 @@ class Relay(discord.Client):
                 continue
             async with self._lock:
                 batch, self._outbox = self._outbox, []
+                dropped, self._dropped = self._dropped, 0
+            if dropped:
+                batch.insert(0, f"*… {dropped} lines dropped while disconnected …*")
             # Drop the middle rather than let the buffer grow without bound.
             if len(batch) > 40:
                 dropped = len(batch) - 40
@@ -231,8 +265,15 @@ class Relay(discord.Client):
             return
         try:
             await chan.send(body, allowed_mentions=discord.AllowedMentions.none())
-        except discord.HTTPException as exc:
-            log.warning("send failed: %s", exc)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Deliberately broad. discord.py wraps aiohttp, which raises its
+            # own errors (ClientConnectorDNSError, ConnectionTimeoutError)
+            # that are not discord.HTTPException -- catching only the latter
+            # is what let a DNS failure escape and kill the caller's loop.
+            log.warning("send to %s failed (%s): %s",
+                        getattr(chan, "id", "?"), type(exc).__name__, exc)
 
     # -- Discord -> game --------------------------------------------------
 
